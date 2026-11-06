@@ -225,3 +225,20 @@ func TestPolicyDropInsBaseOnlyUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"accept"}, reqTypes(p.Transports["docker"]["quay.io/allowed"]))
 }
+
+func TestNewPartialPolicyFromBytes(t *testing.T) {
+	p, err := NewPartialPolicyFromBytes([]byte(`{"transports":{"docker":{"quay.io/x":[{"type":"reject"}]}}}`))
+	require.NoError(t, err)
+	assert.Nil(t, p.Default)
+	assert.Equal(t, []string{"reject"}, reqTypes(p.Transports["docker"]["quay.io/x"]))
+
+	p, err = NewPartialPolicyFromBytes([]byte(`{"default":[{"type":"reject"}]}`))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"reject"}, reqTypes(p.Default))
+
+	for _, bad := range []string{`{"transports":`, `{"bogus":1}`, `{"transports":{"docker":{"quay.io/x":[]}}}`} {
+		_, err := NewPartialPolicyFromBytes([]byte(bad))
+		assert.Error(t, err, bad)
+	}
+	assert.True(t, PolicyScopeEncloses("docker", "quay.io", "quay.io/x"))
+}

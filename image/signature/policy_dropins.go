@@ -216,9 +216,17 @@ func mergePolicyFragments(base *Policy, baseName string, fragments []policyFragm
 	return res, sources, nil
 }
 
-// scopeEncloses reports whether the policy scope parent matches a superset of
-// the images matched by child. PoC: implements docker/atomic-style scopes only
+// PolicyScopeEncloses reports whether, for transport, the policy scope parent
+// matches a superset of the images matched by child. Callers that layer their
+// own policy files on top of DefaultPolicy (for example CRI-O per-namespace
+// policies) use it to find the enclosing scope of a scope.
+// PoC: implements docker/atomic-style scopes only
 // (registry[/namespace...][/repo][:tag|@digest] and *.domain wildcards).
+func PolicyScopeEncloses(transport, parent, child string) bool {
+	_ = transport // PoC: same syntax for all transports
+	return scopeEncloses(parent, child)
+}
+
 func scopeEncloses(parent, child string) bool {
 	if strings.HasPrefix(child, parent) {
 		rest := child[len(parent):]
@@ -271,4 +279,25 @@ func NewPolicyFromFileWithDropInsAndSources(fileName string, sys *types.SystemCo
 	conf.EnvironmentName = "" // an explicit path wins over CONTAINERS_POLICY_JSON{,_OVERRIDE}
 	conf.CustomConfigFilePath = fileName
 	return loadPolicyWithDropIns(conf)
+}
+
+// NewPartialPolicyFromBytes parses a policy that may omit "default" (Default is
+// then nil), with the same strict validation as NewPolicyFromBytes otherwise.
+// Callers that layer their own policy files on top of DefaultPolicy use it.
+func NewPartialPolicyFromBytes(data []byte) (*Policy, error) {
+	var def PolicyRequirements
+	transports := policyTransportsMap{}
+	if err := internal.ParanoidUnmarshalJSONObject(data, func(key string) any {
+		switch key {
+		case "default":
+			return &def
+		case "transports":
+			return &transports
+		default:
+			return nil
+		}
+	}); err != nil {
+		return nil, InvalidPolicyFormatError(err.Error())
+	}
+	return &Policy{Default: def, Transports: map[string]PolicyTransportScopes(transports)}, nil
 }
