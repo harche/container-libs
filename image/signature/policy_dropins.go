@@ -9,13 +9,13 @@
 //  2. A (transport, scope) may be defined by exactly one file. Defining it in
 //     two files is an error that names both files.
 //  3. Only the base policy may set "default" or a transport-wide "" scope.
-//  4. Inheritance: when a scope is enclosed by a more general scope and at
-//     least one of the two comes from a fragment, the requirements of the
-//     enclosing scope are ANDed into the enclosed one. A fragment can therefore
-//     only make verification stricter, never weaker. "default" and "" are not
+//  4. Inheritance across files: a scope also gets (ANDs) the requirements of
+//     the nearest enclosing explicit scope that is defined in a DIFFERENT
+//     file. A file can therefore never weaken another file's rule. Within one
+//     file the classic "most specific scope wins" semantics apply, so a file
+//     can exempt a sub-scope from its own broader rule, and existing
+//     single-file policies behave exactly as before. "default" and "" are not
 //     inherited: they describe images nobody configured explicitly.
-//     Base-to-base scope pairs keep the classic "most specific scope wins"
-//     semantics, so existing single-file policies behave exactly as before.
 
 package signature
 
@@ -164,12 +164,13 @@ func mergePolicyFragments(base *Policy, baseName string, fragments []policyFragm
 		return cmp.Or(cmp.Compare(a.transport, b.transport), cmp.Compare(a.scope, b.scope))
 	})
 
-	// parent returns the nearest enclosing explicit scope of k ("" is never a parent).
+	// parent returns the nearest enclosing explicit scope of k that is defined in a
+	// different file than k ("" is never a parent).
 	parent := func(k policyScopeKey) (policyScopeKey, bool) {
 		var best policyScopeKey
 		found := false
 		for _, c := range keys {
-			if c.transport != k.transport || c.scope == "" || c.scope == k.scope {
+			if c.transport != k.transport || c.scope == "" || c.scope == k.scope || owner[c] == owner[k] {
 				continue
 			}
 			if scopeEncloses(c.scope, k.scope) && (!found || len(c.scope) > len(best.scope)) {
@@ -190,7 +191,7 @@ func mergePolicyFragments(base *Policy, baseName string, fragments []policyFragm
 			return e
 		}
 		e := effective{reqs: slices.Clone(own[k])}
-		if p, ok := parent(k); ok && k.scope != "" && (fromFragment[k] || fromFragment[p]) {
+		if p, ok := parent(k); ok && k.scope != "" {
 			pe := resolve(p)
 			e.reqs = append(e.reqs, pe.reqs...)
 			e.alsoRequires = append([]string{p.String()}, pe.alsoRequires...)
@@ -208,7 +209,7 @@ func mergePolicyFragments(base *Policy, baseName string, fragments []policyFragm
 		}
 		res.Transports[k.transport][k.scope] = e.reqs
 		sources = append(sources, PolicyScopeSource{Transport: k.transport, Scope: k.scope, File: owner[k], AlsoRequires: e.alsoRequires})
-		if fromFragment[k] || len(e.alsoRequires) > 0 {
+		if fromFragment[k] || len(e.alsoRequires) > 0 { // only log scopes that differ from a plain single-file policy
 			logrus.Debugf("Policy scope %s from %q, also requires %v", k, owner[k], e.alsoRequires)
 		}
 	}

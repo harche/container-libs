@@ -177,3 +177,51 @@ func TestScopeEncloses(t *testing.T) {
 		assert.Equal(t, c.want, scopeEncloses(c.parent, c.child), "%q encloses %q", c.parent, c.child)
 	}
 }
+
+func TestPolicyDropInsSameFileExemptionKept(t *testing.T) {
+	// One fragment (e.g. all ClusterImagePolicies rendered by MCO) requires a key for
+	// quay.io/org and exempts quay.io/org/public. Within one file the most specific
+	// scope wins, so the exemption works.
+	p, src, err := loadTestPolicy(t, testBasePolicy, map[string]string{
+		"50-cip.json": `{"transports":{"docker":{
+		  "registry.partner.com":[{"type":"signedBy","keyType":"GPGKeys","keyPath":"/partner.gpg"}],
+		  "registry.partner.com/public":[{"type":"insecureAcceptAnything"}]}}}`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"accept"}, reqTypes(p.Transports["docker"]["registry.partner.com/public"]))
+	for _, s := range src {
+		if s.Scope == "registry.partner.com/public" {
+			assert.Empty(t, s.AlsoRequires)
+		}
+	}
+}
+
+func TestPolicyDropInsSameFileExemptionStillBoundByOtherFiles(t *testing.T) {
+	// The fragment exempts quay.io/acme/public from its own quay.io/acme/... rule, but the
+	// base file (another file) requires /base.gpg for all of quay.io: that still applies.
+	p, src, err := loadTestPolicy(t, testBasePolicy, map[string]string{
+		"50-acme.json": `{"transports":{"docker":{
+		  "quay.io/acme":[{"type":"signedBy","keyType":"GPGKeys","keyPath":"/acme.gpg"}],
+		  "quay.io/acme/public":[{"type":"insecureAcceptAnything"}]}}}`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"signedBy:/acme.gpg", "signedBy:/base.gpg"}, reqTypes(p.Transports["docker"]["quay.io/acme"]))
+	assert.Equal(t, []string{"accept", "signedBy:/base.gpg"}, reqTypes(p.Transports["docker"]["quay.io/acme/public"]))
+	for _, s := range src {
+		if s.Scope == "quay.io/acme/public" {
+			assert.Equal(t, []string{"docker:quay.io"}, s.AlsoRequires)
+		}
+	}
+}
+
+func TestPolicyDropInsBaseOnlyUnchanged(t *testing.T) {
+	// Base-to-base pairs are a same-file pair: classic semantics, nothing ANDed.
+	base := `{"default":[{"type":"insecureAcceptAnything"}],"transports":{"docker":{
+	  "quay.io":[{"type":"reject"}],
+	  "quay.io/allowed":[{"type":"insecureAcceptAnything"}]}}}`
+	p, _, err := loadTestPolicy(t, base, map[string]string{
+		"50-other.json": `{"transports":{"docker":{"registry.example.com":[{"type":"insecureAcceptAnything"}]}}}`,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"accept"}, reqTypes(p.Transports["docker"]["quay.io/allowed"]))
+}
