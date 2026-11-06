@@ -17,14 +17,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 
 	"go.podman.io/image/v5/docker/reference"
 	"go.podman.io/image/v5/signature/internal"
 	"go.podman.io/image/v5/transports"
 	"go.podman.io/image/v5/types"
-	"go.podman.io/storage/pkg/configfile"
 	"go.podman.io/storage/pkg/regexp"
 )
 
@@ -46,41 +44,9 @@ func DefaultPolicy(sys *types.SystemContext) (*Policy, error) {
 		return NewPolicyFromFile(sys.SignaturePolicyPath)
 	}
 
-	var rootForImplicitAbsPaths string
-	if sys != nil {
-		rootForImplicitAbsPaths = sys.RootForImplicitAbsolutePaths
-	}
-
-	policyFiles := configfile.File{
-		Name:                         "policy",
-		Extension:                    "json",
-		DoNotLoadDropInFiles:         true,
-		EnvironmentName:              "CONTAINERS_POLICY_JSON",
-		RootForImplicitAbsolutePaths: rootForImplicitAbsPaths,
-		ErrorIfNotFound:              true,
-	}
-
-	var policy *Policy
-	for item, err := range configfile.Read(&policyFiles) {
-		if err != nil {
-			return nil, err
-		}
-		if policy != nil {
-			// Coverage: This should never happen, configfile.Read ensures at most one policy file.
-			return nil, fmt.Errorf("internal error: expected at most one policy file, got another item %q", item.Name)
-		}
-
-		contents, err := io.ReadAll(item.Reader)
-		if err != nil {
-			return nil, err
-		}
-		policy, err = NewPolicyFromBytes(contents)
-		if err != nil {
-			return nil, fmt.Errorf("invalid policy in %q: %w", item.Name, err)
-		}
-	}
-
-	return policy, nil
+	// Compose the base policy.json with drop-in fragments from policy.json.d (see policy_dropins.go).
+	policy, _, err := loadPolicyWithDropIns(policyFilesConfig(sys))
+	return policy, err
 }
 
 // NewPolicyFromFile returns a policy configured in the specified file.
